@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Store Navigation Control Deck</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --accent: #38bdf8;
+      --success: #22c55e;
+      --danger: #ef4444;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 24px;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+    h2, h3 { margin: 0; font-weight: 600; }
+    h2 { color: var(--accent); font-size: 1.25rem; }
+    h3 { font-size: 0.95rem; color: #94a3b8; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    label { font-size: 0.85rem; color: #cbd5e1; display: block; margin-bottom: 4px; }
+    select, input, button {
+      width: 100%;
+      padding: 10px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.9rem;
+      box-sizing: border-box;
+    }
+    button {
+      background: var(--accent);
+      color: #0f172a;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.9; }
+    .canvas-container {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    canvas { width: 100%; height: 100%; display: block; }
+    .status-bar {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border);
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Controls Side Panel -->
+  <div class="panel">
+    <h2>Spatial Navigator</h2>
+
+    <!-- Point to Point Routing -->
+    <div>
+      <h3>Single-Source Path (SSSP)</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+        <div>
+          <label>Source Node</label>
+          <input type="number" id="srcNode" value="0" min="0" max="5" />
+        </div>
+        <div>
+          <label>Target Node</label>
+          <input type="number" id="destNode" value="5" min="0" max="5" />
+        </div>
+      </div>
+      <div style="margin-top: 8px;">
+        <label>Algorithm</label>
+        <select id="algoSelect">
+          <option value="dijkstra">Dijkstra (O((V+E)logV))</option>
+          <option value="bellman-ford">Bellman-Ford (O(V*E))</option>
+        </select>
+      </div>
+      <button style="margin-top: 12px;" onclick="fetchRoute()">Compute Shortest Path</button>
+    </div>
+
+    <!-- Multi-Item Itinerary -->
+    <div>
+      <h3>Multi-Stop Shopping List (APSP)</h3>
+      <label style="margin-top: 8px;">Item Node IDs (comma separated)</label>
+      <input type="text" id="targetItems" value="3, 4, 5" />
+      <button style="margin-top: 10px; background: var(--success); color: white;" onclick="fetchBatchItinerary()">
+        Solve Order Picking
+      </button>
+    </div>
+
+    <!-- Congestion / Dynamic Weight Injection -->
+    <div>
+      <h3>Dynamic Telemetry Injection</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+        <div>
+          <label>Edge U</label>
+          <input type="number" id="edgeU" value="0" min="0" max="5" />
+        </div>
+        <div>
+          <label>Edge V</label>
+          <input type="number" id="edgeV" value="1" min="0" max="5" />
+        </div>
+      </div>
+      <label style="margin-top: 8px;">Congestion Weight</label>
+      <input type="number" id="newWeight" value="50" />
+      <button style="margin-top: 10px; background: var(--danger); color: white;" onclick="injectTelemetry()">
+        Inject Weight Update
+      </button>
+    </div>
+  </div>
+
+  <!-- Map Visualizer Canvas -->
+  <div class="canvas-container">
+    <canvas id="storeCanvas"></canvas>
+    <div class="status-bar" id="statusBar">Engine Ready. Select nodes or inject dynamic edge updates.</div>
+  </div>
+
+  <script>
+    const API_URL = "http://127.0.0.1:8000";
+    const canvas = document.getElementById("storeCanvas");
+    const ctx = canvas.getContext("2d");
+
+    // Geometric coordinate anchors for the 6-junction layout
+    const nodes = {
+      0: { x: 100, y: 150, name: "Entrance (0)" },
+      1: { x: 300, y: 100, name: "Produce (1)" },
+      2: { x: 280, y: 320, name: "Bakery (2)" },
+      3: { x: 500, y: 120, name: "Dairy (3)" },
+      4: { x: 480, y: 340, name: "Beverages (4)" },
+      5: { x: 700, y: 220, name: "Exit/Checkout (5)" }
+    };
+
+    let edges = [
+      { u: 0, v: 1, weight: 4 },
+      { u: 0, v: 2, weight: 2 },
+      { u: 1, v: 2, weight: 1 },
+      { u: 1, v: 3, weight: 5 },
+      { u: 2, v: 3, weight: 8 },
+      { u: 2, v: 4, weight: 10 },
+      { u: 3, v: 5, weight: 6 },
+      { u: 4, v: 5, weight: 2 }
+    ];
+
+    let highlightedPath = [];
+
+    function resize() {
+      canvas.width = canvas.parentElement.clientWidth;
+      canvas.height = canvas.parentElement.clientHeight;
+      draw();
+    }
+    window.addEventListener("resize", resize);
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Render Edges
+      edges.forEach(e => {
+        const from = nodes[e.u];
+        const to = nodes[e.v];
+        const isPath = isEdgeInPath(e.u, e.v);
+
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.strokeStyle = isPath ? "#22c55e" : "#334155";
+        ctx.lineWidth = isPath ? 4 : 2;
+        ctx.stroke();
+
+        // Edge labels
+        const midX = (from.x + to.x) / 2;
+        const midY = (from.y + to.y) / 2;
+        ctx.fillStyle = isPath ? "#86efac" : "#64748b";
+        ctx.font = "12px monospace";
+        ctx.fillText(`w:${e.weight}`, midX + 5, midY - 5);
+      });
+
+      // Render Nodes
+      Object.keys(nodes).forEach(id => {
+        const n = nodes[id];
+        const active = highlightedPath.includes(parseInt(id));
+
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, 18, 0, 2 * Math.PI);
+        ctx.fillStyle = active ? "#22c55e" : "#0284c7";
+        ctx.fill();
+        ctx.strokeStyle = "#f8fafc";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = "#f8fafc";
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(id, n.x, n.y);
+
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "11px sans-serif";
+        ctx.fillText(n.name, n.x, n.y + 28);
+      });
+    }
+
+    function isEdgeInPath(u, v) {
+      for (let i = 0; i < highlightedPath.length - 1; i++) {
+        if (
+          (highlightedPath[i] === u && highlightedPath[i + 1] === v) ||
+          (highlightedPath[i] === v && highlightedPath[i + 1] === u)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    async function fetchRoute() {
+      const src = parseInt(document.getElementById("srcNode").value);
+      const dest = parseInt(document.getElementById("destNode").value);
+      const algo = document.getElementById("algoSelect").value;
+
+      try {
+        const res = await fetch(`${API_URL}/api/route`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: src, destination: dest, algorithm: algo })
+        });
+        const data = await res.json();
+        highlightedPath = data.path || [];
+        document.getElementById("statusBar").innerText = 
+          `[${algo.toUpperCase()}] Path: ${highlightedPath.join(" → ")} | Cost: ${data.total_distance ?? data.accumulated_cost}`;
+        draw();
+      } catch (err) {
+        document.getElementById("statusBar").innerText = "Error: Failed to connect to FastAPI backend.";
+      }
+    }
+
+    async function fetchBatchItinerary() {
+      const items = document.getElementById("targetItems").value
+        .split(",")
+        .map(x => parseInt(x.trim()))
+        .filter(x => !isNaN(x));
+
+      try {
+        const res = await fetch(`${API_URL}/api/optimize-shopping-list`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entrance: 0, items: items })
+        });
+        const data = await res.json();
+        highlightedPath = data.route || data.optimized_order || [];
+        document.getElementById("statusBar").innerText = 
+          `[SHOPPING TSP] Route Sequence: ${highlightedPath.join(" → ")} | Total Distance: ${data.total_cost ?? data.total_estimated_time}`;
+        draw();
+      } catch (err) {
+        document.getElementById("statusBar").innerText = "Error: Failed to optimize itinerary.";
+      }
+    }
+
+    async function injectTelemetry() {
+      const u = parseInt(document.getElementById("edgeU").value);
+      const v = parseInt(document.getElementById("edgeV").value);
+      const weight = parseFloat(document.getElementById("newWeight").value);
+
+      try {
+        await fetch(`${API_URL}/api/aisle/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ u, v, new_weight: weight })
+        });
+
+        // Update local edge state
+        edges.forEach(e => {
+          if ((e.u === u && e.v === v) || (e.u === v && e.v === u)) {
+            e.weight = weight;
+          }
+        });
+
+        document.getElementById("statusBar").innerText = `Dynamic update applied: Edge (${u}, ${v}) weight set to ${weight}`;
+        draw();
+      } catch (err) {
+        document.getElementById("statusBar").innerText = "Error: Failed to inject weight telemetry.";
+      }
+    }
+
+    setTimeout(resize, 50);
+  </script>
+</body>
+</html>
